@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distraction Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f4f8;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .app-container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            width: 90%;
+            max-width: 640px;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 0;
+            padding-bottom: 75%;
+            overflow: hidden;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        #video, #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        #canvas {
+            z-index: 10;
+        }
+        .status-container {
+            background-color: #ecf0f1;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        #status, #details {
+            margin: 5px 0;
+            font-weight: bold;
+        }
+        #status {
+            color: #2ecc71;
+        }
+        #details {
+            color: #3498db;
+        }
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+        #stopBtn {
+            background-color: #e74c3c;
+        }
+        #stopBtn:hover {
+            background-color: #c0392b;
+        }
+        .badge-container {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .badge {
+            background-color: #ecf0f1;
+            color: #2c3e50;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.9em;
+            display: flex;
+            align-items: center;
+        }
+        .badge svg {
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <h1>Distraction Monitor</h1>
+        <div class="video-container">
+            <video id="video" playsinline></video>
+            <canvas id="canvas"></canvas>
+        </div>
+        <div class="badge-container">
+            <div id="eyeStatus" class="badge">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                Eyes Open
+            </div>
+            <div id="faceStatus" class="badge">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                No Face
+            </div>
+        </div>
+        <div class="status-container">
+            <p id="status">Status: Initializing...</p>
+            <p id="details">Details: Setting up camera...</p>
+        </div>
+        <div class="button-container">
+            <button id="startBtn">Start Monitoring</button>
+            <button id="stopBtn" disabled>Stop</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById("video");
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const statusElement = document.getElementById("status");
+        const detailsElement = document.getElementById("details");
+        const eyeStatusElement = document.getElementById("eyeStatus");
+        const faceStatusElement = document.getElementById("faceStatus");
+        const startBtn = document.getElementById("startBtn");
+        const stopBtn = document.getElementById("stopBtn");
+
+        const eyeClosureThreshold = 0.15;
+        const sideViewThreshold = 0.6;
+        const blinkDuration = 300;
+        let lastAlertTime = 0;
+        let lastBlinkTime = 0;
+        let eyesClosed = false;
+        let isMonitoring = false;
+
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        const camera = new Camera(video, {
+            onFrame: async () => {
+                if (isMonitoring) {
+                    await faceMesh.send({ image: video });
+                }
+            },
+            width: 1280,
+            height: 720
+        });
+
+        startBtn.addEventListener('click', startMonitoring);
+        stopBtn.addEventListener('click', stopMonitoring);
+
+        function startMonitoring() {
+            isMonitoring = true;
+            camera.start().then(() => {
+                console.log("Camera started successfully");
+                statusElement.textContent = "Status: Monitoring";
+                detailsElement.textContent = "Watching for distractions...";
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+            }).catch(error => {
+                console.error("Error starting camera:", error);
+                statusElement.textContent = "Status: Camera error";
+                detailsElement.textContent = "Failed to initialize camera. Please check permissions.";
+            });
+        }
+
+        function stopMonitoring() {
+            isMonitoring = false;
+            camera.stop();
+            statusElement.textContent = "Status: Stopped";
+            detailsElement.textContent = "Monitoring paused";
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+
+        function onResults(results) {
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                drawLandmarks(ctx, landmarks);
+
+                const leftEyeRatio = calculateEyeAspectRatio(landmarks, [159, 145, 33, 133, 160, 144]);
+                const rightEyeRatio = calculateEyeAspectRatio(landmarks, [386, 374, 362, 263, 387, 373]);
+                const averageEyeRatio = (leftEyeRatio + rightEyeRatio) / 2;
+
+                const sideways = calculateSidewaysLook(landmarks[6], landmarks[4], landmarks[234], landmarks[454]);
+
+                updateStatus(averageEyeRatio, sideways);
+                faceStatusElement.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> Face Detected';
+            } else {
+                statusElement.textContent = "Status: No Face Detected";
+                detailsElement.textContent = "Please position your face in front of the camera.";
+                faceStatusElement.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> No Face';
+            }
+            ctx.restore();
+        }
+
+        function drawLandmarks(ctx, landmarks) {
+            ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
+            landmarks.forEach(({ x, y }) => {
+                const px = x * canvas.width;
+                const py = y * canvas.height;
+                ctx.beginPath();
+                ctx.arc(px, py, 1, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+
+        function calculateEyeAspectRatio(landmarks, indices) {
+            const [p1, p2, p3, p4, p5, p6] = indices.map(index => landmarks[index]);
+            const vertical1 = euclideanDistance(p2, p6);
+            const vertical2 = euclideanDistance(p3, p5);
+            const horizontal = euclideanDistance(p1, p4);
+            return (vertical1 + vertical2) / (2 * horizontal);
+        }
+
+        function calculateSidewaysLook(noseTop, noseBottom, leftCheek, rightCheek) {
+            const noseVector = {
+                x: noseBottom.x - noseTop.x,
+                y: noseBottom.y - noseTop.y,
+                z: noseBottom.z - noseTop.z
+            };
+            const cheekVector = {
+                x: rightCheek.x - leftCheek.x,
+                y: rightCheek.y - leftCheek.y,
+                z: rightCheek.z - leftCheek.z
+            };
+            return 1 - Math.abs(dotProduct(noseVector, cheekVector) / (magnitude(noseVector) * magnitude(cheekVector)));
+        }
+
+        function updateStatus(eyeRatio, sideways) {
+            let distracted = false;
+            let message = "Focused";
+
+            const now = Date.now();
+
+            if (eyeRatio < eyeClosureThreshold) {
+                if (!eyesClosed) {
+                    eyesClosed = true;
+                    lastBlinkTime = now;
+                } else if (now - lastBlinkTime > blinkDuration) {
+                    message = "Drowsy (Eyes Closed)";
+                    distracted = true;
+                    eyeStatusElement.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg> Eyes Closed';
+                }
+            } else {
+                eyesClosed = false;
+                eyeStatusElement.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg> Eyes Open';
+            }
+
+            if (sideways > sideViewThreshold) {
+                message = "Distracted (Looking Sideways)";
+                distracted = false;
+            }
+
+            if (distracted) {
+                statusElement.textContent = "Status: Distracted";
+                statusElement.style.color = "#e74c3c";
+                detailsElement.textContent = message;
+                detailsElement.style.color = "#e74c3c";
+                if (now - lastAlertTime > 3000) {
+                    alert(`Warning: ${message}`);
+                    lastAlertTime = now;
+                }
+            } else {
+                statusElement.textContent = "Status: Focused";
+                statusElement.style.color = "#2ecc71";
+                detailsElement.textContent = "Attentive";
+                detailsElement.style.color = "#3498db";
+            }
+        }
+
+        function euclideanDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
+        }
+
+        function dotProduct(v1, v2) {
+            return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+        }
+
+        function magnitude(v) {
+            return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        }
+    </script>
+</body>
+</html>
